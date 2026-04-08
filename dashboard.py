@@ -30,6 +30,20 @@ DIMENSION_TARGETS = {
     "bottom": (24.45, 24.55),
     "length": (89.95, 90.05),
 }
+DIMENSION_CHART_FIELDS = {
+    "top": {
+        "label": "TOP",
+        "keys": ["dimension of top", "dim_top", "top", "dimension_top", "top_mm", "top_value"],
+    },
+    "bottom": {
+        "label": "BOTTOM",
+        "keys": ["dimension of bottom", "dim_bottom", "bottom", "dimension_bottom", "bottom_mm", "bottom_value"],
+    },
+    "length": {
+        "label": "LENGTH",
+        "keys": ["dimension of length", "dim_length", "length", "dimension_length", "length_mm", "length_value"],
+    },
+}
 
 
 def load_local_config():
@@ -3188,6 +3202,120 @@ def control_chart(labels, values, theme_mode):
     return fig
 
 
+def extract_dimension_chart_points(df, dimension_key, limit=12):
+    config = DIMENSION_CHART_FIELDS.get(str(dimension_key).strip().lower())
+    if df.empty or not config:
+        return [], []
+
+    recent = df.head(limit).iloc[::-1]
+    labels = []
+    values = []
+    for _, row in recent.iterrows():
+        raw_value = pick_first_value(row, config["keys"], None)
+        if raw_value is None:
+            continue
+        try:
+            numeric_value = float(str(raw_value).replace(" mm", "").strip())
+        except (TypeError, ValueError):
+            continue
+        labels.append(str(row.get("part_id", len(labels) + 1)))
+        values.append(numeric_value)
+    return labels, values
+
+
+@st.cache_data(show_spinner=False)
+def dimension_control_chart(labels, values, theme_mode, dimension_key):
+    is_dark = is_dark_theme(theme_mode)
+    axis_text = "#d7e0e8" if is_dark else "#5a564f"
+    grid_color = "rgba(132, 151, 172, 0.22)" if is_dark else "rgba(200,192,179,0.35)"
+    plot_line = "#8eb8ff" if is_dark else "#2458a6"
+    cl_color = "#f0be74" if is_dark else "#af650f"
+    limit_color = "#f08b81" if is_dark else "#ba4335"
+    hover_bg = "#212933" if is_dark else "#fffdf8"
+    hover_border = "#49586a" if is_dark else "#d9cfbf"
+    hover_text = "#eef3f7" if is_dark else "#171512"
+
+    spec_key = str(dimension_key).strip().lower()
+    lower, upper = DIMENSION_TARGETS.get(spec_key, (0.0, 1.0))
+    center = (lower + upper) / 2
+
+    if values:
+        y_min = min(values + [lower, center, upper])
+        y_max = max(values + [lower, center, upper])
+    else:
+        y_min = lower
+        y_max = upper
+
+    pad = max((y_max - y_min) * 0.28, 0.02)
+    y_range = [y_min - pad, y_max + pad]
+    marker_colors = [plot_line if lower <= value <= upper else limit_color for value in values]
+
+    fig = go.Figure()
+    if values:
+        fig.add_trace(
+            go.Scatter(
+                x=labels,
+                y=values,
+                mode="lines+markers",
+                name="Measurement",
+                line=dict(color=plot_line, width=2.6),
+                marker=dict(size=8, color=marker_colors, line=dict(color="rgba(255,255,255,0.78)", width=0.9)),
+                hovertemplate="<b>Part %{x}</b><br>Value: %{y:.3f} mm<extra></extra>",
+            )
+        )
+
+    for line_name, line_value, line_color, line_dash in (
+        ("UCL", upper, limit_color, "dash"),
+        ("CL", center, cl_color, "dot"),
+        ("LCL", lower, limit_color, "dash"),
+    ):
+        fig.add_trace(
+            go.Scatter(
+                x=labels if labels else [""],
+                y=[line_value] * (len(labels) if labels else 1),
+                mode="lines",
+                name=line_name,
+                line=dict(color=line_color, width=1.7, dash=line_dash),
+                hovertemplate=f"{line_name}: {line_value:.3f} mm<extra></extra>",
+            )
+        )
+
+    if not values:
+        fig.add_annotation(
+            text="No dimension data available",
+            x=0.5,
+            y=0.5,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+            font=dict(size=12, color=axis_text),
+        )
+
+    fig.update_layout(
+        margin=dict(t=10, b=16, l=0, r=0),
+        height=252,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        hoverlabel=dict(bgcolor=hover_bg, bordercolor=hover_border, font=dict(color=hover_text)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0, font=dict(size=9)),
+        yaxis=dict(
+            title=dict(text="mm", font=dict(size=11, color=axis_text)),
+            range=y_range,
+            tickformat=".3f",
+            gridcolor=grid_color,
+            tickfont=dict(size=10, color=axis_text),
+            zeroline=False,
+        ),
+        xaxis=dict(
+            title=dict(text="Part ID", font=dict(size=11, color=axis_text)),
+            tickfont=dict(size=11, color=axis_text),
+            showgrid=False,
+            zeroline=False,
+        ),
+    )
+    return fig
+
+
 st.markdown('<div id="main-columns-anchor"></div>', unsafe_allow_html=True)
 st.markdown('<div class="mobile-topbar-spacer"></div>', unsafe_allow_html=True)
 try:
@@ -3861,27 +3989,36 @@ if True:
         )
 
     with trend_chart_slot.container():
-        trend_labels = ("",)
-        trend_values = (0,)
-        if not df_parts_search_base.empty and "_result_norm" in df_parts_search_base.columns:
-            recent = df_parts_search_base.head(12).iloc[::-1]
-            trend_values = tuple((recent["_result_norm"] == "PASS").astype(int).tolist()) or (0,)
-            trend_labels = tuple(recent.get("part_id", range(1, len(recent) + 1)).astype(str).tolist()) or ("",)
+        selected_dimension = st.session_state.get("_dash_dimension_chart_key", "top")
+        if selected_dimension not in DIMENSION_CHART_FIELDS:
+            selected_dimension = "top"
         st.markdown(
-            """
+            f"""
             <div id="trend-chart-anchor"></div>
             <div class="chart-shell">
                 <div class="chart-head">
-                    <span class="chart-title">Pass / Fail Trend</span>
-                    <span class="chart-sub">Recent sequence</span>
+                    <span class="chart-title">Dimension Control Chart</span>
+                    <span class="chart-sub">UCL / CL / LCL for {DIMENSION_CHART_FIELDS[selected_dimension]['label']}</span>
                 </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+        dim_button_cols = st.columns(3, gap="small")
+        for button_col, dim_key in zip(dim_button_cols, ("top", "bottom", "length")):
+            with button_col:
+                if st.button(
+                    DIMENSION_CHART_FIELDS[dim_key]["label"],
+                    key=f"dimension_chart_{dim_key}",
+                    use_container_width=True,
+                    type="primary" if selected_dimension == dim_key else "secondary",
+                ):
+                    st.session_state["_dash_dimension_chart_key"] = dim_key
+                    selected_dimension = dim_key
+        chart_labels, chart_values = extract_dimension_chart_points(df_parts_search_base, selected_dimension, limit=12)
         st.plotly_chart(
-            control_chart(trend_labels, trend_values, theme_mode),
+            dimension_control_chart(tuple(chart_labels), tuple(chart_values), theme_mode, selected_dimension),
             use_container_width=True,
             config=CHART_CONFIG,
-            key="control_chart_main",
+            key="dimension_control_chart_main",
         )
