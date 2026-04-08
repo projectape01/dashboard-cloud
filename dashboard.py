@@ -2,6 +2,7 @@ import time
 import html
 import base64
 import os
+import json
 from collections import Counter
 from datetime import datetime, timezone
 
@@ -15,15 +16,30 @@ from plotly.subplots import make_subplots
 # --- Configuration ---
 DEFAULT_SUPABASE_URL = "https://ptxfbxwufbrivfrcplku.supabase.co"
 DEFAULT_SUPABASE_KEY = ""
-DATA_REFRESH_SECONDS = 90
+DATA_REFRESH_SECONDS = 30
+PART_RECORDS_REFRESH_SECONDS = 90
 SUPABASE_TIMEOUT_SECONDS = 4
 SYSTEM_STATUS_STALE_SECONDS = 150
 CHART_CONFIG = {"displayModeBar": False, "staticPlot": True, "responsive": True}
 PART_RECORDS_FETCH_LIMIT = 60
 HISTORY_ROWS_RENDER_LIMIT = 18
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+
+
+def load_local_config():
+    if not os.path.exists(CONFIG_PATH):
+        return {}
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 
 def get_secret_or_env(name, default=""):
+    local_cfg = load_local_config()
     try:
         if name in st.secrets:
             value = st.secrets[name]
@@ -35,12 +51,14 @@ def get_secret_or_env(name, default=""):
     env_value = os.getenv(name)
     if env_value not in (None, ""):
         return str(env_value)
+    cfg_value = local_cfg.get(name)
+    if cfg_value not in (None, ""):
+        return str(cfg_value)
     return str(default)
 
 
 SUPABASE_URL = get_secret_or_env("SUPABASE_URL", DEFAULT_SUPABASE_URL).rstrip("/")
 SUPABASE_KEY = get_secret_or_env("SUPABASE_KEY", DEFAULT_SUPABASE_KEY).strip()
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 st.set_page_config(
     page_title="Production Monitor",
@@ -2483,9 +2501,17 @@ def fetch(table, limit=20, order="timestamp"):
     try:
         response = get_requests_session().get(url, timeout=SUPABASE_TIMEOUT_SECONDS)
         if response.status_code == 200:
-            return pd.DataFrame(response.json())
+            rows = response.json()
+            print(
+                f"[DASH_FETCH] table={table} status=200 rows={len(rows) if isinstance(rows, list) else 'n/a'}",
+                flush=True,
+            )
+            return pd.DataFrame(rows)
+        print(f"[DASH_FETCH] table={table} status={response.status_code} body={response.text[:240]}", flush=True)
     except Exception:
-        pass
+        import traceback
+        print(f"[DASH_FETCH] table={table} exception", flush=True)
+        traceback.print_exc()
     return pd.DataFrame()
 
 
@@ -3153,18 +3179,28 @@ if True:
     now = datetime.now()
     now_utc = datetime.now(timezone.utc)
     now_ts = now.timestamp()
-    last_refresh_ts = st.session_state.get("_dash_last_refresh_ts", 0.0)
-    needs_refresh = (now_ts - last_refresh_ts) >= DATA_REFRESH_SECONDS
+    last_sys_refresh_ts = st.session_state.get("_dash_last_sys_refresh_ts", 0.0)
+    last_parts_refresh_ts = st.session_state.get("_dash_last_parts_refresh_ts", 0.0)
+    needs_sys_refresh = (now_ts - last_sys_refresh_ts) >= DATA_REFRESH_SECONDS
+    needs_parts_refresh = (now_ts - last_parts_refresh_ts) >= PART_RECORDS_REFRESH_SECONDS
 
-    if needs_refresh or "_dash_df_sys" not in st.session_state:
-        st.session_state["_dash_df_sys"] = fetch("system_status", limit=1)
+    if needs_sys_refresh or "_dash_df_sys" not in st.session_state:
+        st.session_state["_dash_df_sys"] = fetch("system_status", limit=1, order="id")
+        st.session_state["_dash_last_sys_refresh_ts"] = now_ts
+
+    if needs_parts_refresh or "_dash_df_parts" not in st.session_state:
         st.session_state["_dash_df_parts"] = fetch("part_records", limit=PART_RECORDS_FETCH_LIMIT, order="record_timestamp")
         st.session_state["_dash_df_parts_search"] = preprocess_part_records(st.session_state["_dash_df_parts"])
-        st.session_state["_dash_last_refresh_ts"] = now_ts
+        st.session_state["_dash_last_parts_refresh_ts"] = now_ts
 
     df_sys = st.session_state.get("_dash_df_sys", pd.DataFrame())
     df_parts = st.session_state.get("_dash_df_parts", pd.DataFrame())
     df_parts_search_base = st.session_state.get("_dash_df_parts_search", df_parts.copy())
+    print(
+        f"[DASH_STATE] df_sys_rows={len(df_sys)} df_sys_cols={list(df_sys.columns)} "
+        f"df_parts_rows={len(df_parts)} df_parts_cols={list(df_parts.columns)}",
+        flush=True,
+    )
 
     cpu = ram = disk = None
     temp = None
@@ -3177,8 +3213,6 @@ if True:
     printer_remaining = None
     printer_stage = None
     robot_status = "Unknown"
-    ai_label = "---"
-    ai_prob = 0.0
     sys_timestamp = ""
     server_ip = "127.0.0.1"
     modbus_port = "5020"
@@ -3191,8 +3225,6 @@ if True:
         temp = safe_float(latest.get("pi_cpu_temp"), None)
         printer_status = latest.get("printer_status")
         robot_status = latest.get("robot_status", "Unknown")
-        ai_label = str(latest.get("ai_label", "---"))
-        ai_prob = safe_float(latest.get("ai_prob"), 0.0)
         printer_progress = safe_float(latest.get("printer_progress"), None)
         printer_task = str(latest.get("printer_task_name") or "").strip() or None
         printer_stage = str(latest.get("printer_sub_stage") or "").strip() or None
@@ -3202,23 +3234,16 @@ if True:
         server_ip = str(latest.get("server_ip") or server_ip)
         modbus_port = str(latest.get("modbus_port") or modbus_port)
         sys_timestamp = str(latest.get("timestamp", ""))
-
-        temp_pair = str(latest.get("printer_temp", "0/0")).split("/")
-        nozzle = safe_float(temp_pair[0] if len(temp_pair) > 0 else None, None)
-        bed = safe_float(temp_pair[1] if len(temp_pair) > 1 else None, None)
+        nozzle = safe_float(latest.get("printer_nozzle_temp"), None)
+        bed = safe_float(latest.get("printer_bed_temp"), None)
 
     system_status_is_fresh = is_timestamp_fresh(sys_timestamp, SYSTEM_STATUS_STALE_SECONDS, now_utc)
 
     if not system_status_is_fresh:
-        cpu = ram = disk = temp = None
-        robot_status = "Disconnected"
-        sys_timestamp = ""
-        printer_status = "Disconnected"
-        printer_progress = None
-        printer_task = None
-        printer_remaining = None
-        printer_stage = None
-        nozzle = bed = None
+        if not robot_status:
+            robot_status = "Disconnected"
+        if not printer_status:
+            printer_status = "Disconnected"
 
     printer_status_upper = str(printer_status or "").strip().upper()
     printer_is_active = printer_status_upper in {"RUNNING", "PRINTING", "PREPARE", "PREPARING", "PAUSE", "PAUSED"} or (printer_progress or 0) > 0
