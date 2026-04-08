@@ -15,12 +15,9 @@ from plotly.subplots import make_subplots
 # --- Configuration ---
 DEFAULT_SUPABASE_URL = "https://ptxfbxwufbrivfrcplku.supabase.co"
 DEFAULT_SUPABASE_KEY = ""
-DATA_REFRESH_SECONDS = 180
-LIVE_STATUS_REFRESH_SECONDS = 10
+DATA_REFRESH_SECONDS = 90
 SUPABASE_TIMEOUT_SECONDS = 4
-LIVE_STATUS_TIMEOUT_SECONDS = 1.5
 SYSTEM_STATUS_STALE_SECONDS = 150
-LIVE_STATUS_STALE_SECONDS = 20
 CHART_CONFIG = {"displayModeBar": False, "staticPlot": True, "responsive": True}
 PART_RECORDS_FETCH_LIMIT = 60
 HISTORY_ROWS_RENDER_LIMIT = 18
@@ -43,7 +40,6 @@ def get_secret_or_env(name, default=""):
 
 SUPABASE_URL = get_secret_or_env("SUPABASE_URL", DEFAULT_SUPABASE_URL).rstrip("/")
 SUPABASE_KEY = get_secret_or_env("SUPABASE_KEY", DEFAULT_SUPABASE_KEY).strip()
-LIVE_STATUS_URL = get_secret_or_env("LIVE_STATUS_URL", "").strip()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 st.set_page_config(
@@ -2493,19 +2489,6 @@ def fetch(table, limit=20, order="timestamp"):
     return pd.DataFrame()
 
 
-@st.cache_data(ttl=5, show_spinner=False)
-def fetch_live_status():
-    if not LIVE_STATUS_URL:
-        return {}
-    try:
-        response = requests.get(LIVE_STATUS_URL, timeout=LIVE_STATUS_TIMEOUT_SECONDS)
-        if response.status_code == 200:
-            return response.json()
-    except Exception:
-        pass
-    return {}
-
-
 def safe_float(value, default=0.0):
     try:
         return float(value)
@@ -3171,9 +3154,7 @@ if True:
     now_utc = datetime.now(timezone.utc)
     now_ts = now.timestamp()
     last_refresh_ts = st.session_state.get("_dash_last_refresh_ts", 0.0)
-    last_live_status_refresh_ts = st.session_state.get("_dash_live_status_refresh_ts", 0.0)
     needs_refresh = (now_ts - last_refresh_ts) >= DATA_REFRESH_SECONDS
-    needs_live_status_refresh = (now_ts - last_live_status_refresh_ts) >= LIVE_STATUS_REFRESH_SECONDS
 
     if needs_refresh or "_dash_df_sys" not in st.session_state:
         st.session_state["_dash_df_sys"] = fetch("system_status", limit=1)
@@ -3181,19 +3162,9 @@ if True:
         st.session_state["_dash_df_parts_search"] = preprocess_part_records(st.session_state["_dash_df_parts"])
         st.session_state["_dash_last_refresh_ts"] = now_ts
 
-    if needs_live_status_refresh or "_dash_live_status" not in st.session_state:
-        live_status_payload = fetch_live_status()
-        st.session_state["_dash_live_status"] = live_status_payload if isinstance(live_status_payload, dict) else {}
-        st.session_state["_dash_live_status_fetched_at_ts"] = now_ts if st.session_state["_dash_live_status"] else 0.0
-        st.session_state["_dash_live_status_refresh_ts"] = now_ts
-
     df_sys = st.session_state.get("_dash_df_sys", pd.DataFrame())
     df_parts = st.session_state.get("_dash_df_parts", pd.DataFrame())
     df_parts_search_base = st.session_state.get("_dash_df_parts_search", df_parts.copy())
-    live_status = st.session_state.get("_dash_live_status", {})
-    live_status_fetched_at_ts = float(st.session_state.get("_dash_live_status_fetched_at_ts", 0.0) or 0.0)
-    live_status_is_fresh = bool(live_status) and (now_ts - live_status_fetched_at_ts) <= LIVE_STATUS_STALE_SECONDS
-    live_printer = live_status.get("printer", {}) if live_status_is_fresh and isinstance(live_status, dict) else {}
 
     cpu = ram = disk = None
     temp = None
@@ -3209,6 +3180,8 @@ if True:
     ai_label = "---"
     ai_prob = 0.0
     sys_timestamp = ""
+    server_ip = "127.0.0.1"
+    modbus_port = "5020"
 
     if not df_sys.empty:
         latest = df_sys.iloc[0]
@@ -3226,6 +3199,8 @@ if True:
         printer_remaining_raw = latest.get("printer_remaining_time")
         printer_remaining_fmt = format_remaining_minutes(printer_remaining_raw)
         printer_remaining = printer_remaining_fmt if printer_remaining_fmt != "N/A" else None
+        server_ip = str(latest.get("server_ip") or server_ip)
+        modbus_port = str(latest.get("modbus_port") or modbus_port)
         sys_timestamp = str(latest.get("timestamp", ""))
 
         temp_pair = str(latest.get("printer_temp", "0/0")).split("/")
@@ -3238,30 +3213,19 @@ if True:
         cpu = ram = disk = temp = None
         robot_status = "Disconnected"
         sys_timestamp = ""
-        if not live_printer:
-            printer_status = "Disconnected"
-            printer_progress = None
-            printer_task = None
-            printer_remaining = None
-            printer_stage = None
-            nozzle = bed = None
-
-    if live_printer and (printer_progress is None or printer_task is None or printer_stage is None or printer_remaining is None):
-        printer_status = live_printer.get("status", printer_status)
-        nozzle = safe_float(live_printer.get("nozzle_temp"), nozzle)
-        bed = safe_float(live_printer.get("bed_temp"), bed)
-        printer_progress = safe_float(live_printer.get("percent"), None)
-        printer_task = str(live_printer.get("task_name") or "").strip() or printer_task
-        printer_stage = str(live_printer.get("sub_stage") or "").strip() or printer_stage
-        remaining = format_remaining_minutes(live_printer.get("remaining_time"))
-        printer_remaining = remaining if remaining != "N/A" else printer_remaining
+        printer_status = "Disconnected"
+        printer_progress = None
+        printer_task = None
+        printer_remaining = None
+        printer_stage = None
+        nozzle = bed = None
 
     printer_status_upper = str(printer_status or "").strip().upper()
     printer_is_active = printer_status_upper in {"RUNNING", "PRINTING", "PREPARE", "PREPARING", "PAUSE", "PAUSED"} or (printer_progress or 0) > 0
     printer_connected = printer_status_upper not in {"DISCONNECTED", "UNKNOWN", ""} and not printer_status_upper.startswith("CONN ERROR")
     temp_num_class = "temp-num active" if printer_is_active else "temp-num"
-    cobot_ip = str(live_status.get("server_ip", "127.0.0.1")) if live_status_is_fresh and isinstance(live_status, dict) else "127.0.0.1"
-    cobot_port = str(live_status.get("modbus_port", 5020)) if live_status_is_fresh and isinstance(live_status, dict) else "5020"
+    cobot_ip = server_ip
+    cobot_port = modbus_port
     raspberry_online = system_status_is_fresh
     cobot_online = raspberry_online and str(robot_status).strip().lower() == "connected"
     database_online = not df_sys.empty
