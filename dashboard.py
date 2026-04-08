@@ -771,6 +771,10 @@ st.markdown(
         backdrop-filter: blur(6px) !important;
         margin-bottom: 0 !important;
     }
+    div[data-testid="stVerticalBlock"]:has(#trend-chart-anchor):not(:has(div[data-testid="stVerticalBlock"] #trend-chart-anchor)) {
+        padding: 0 12px 8px !important;
+        position: relative !important;
+    }
     div[data-testid="stHorizontalBlock"]:has(#ng-chart-anchor):has(#trend-chart-anchor) {
         gap: 12px !important;
         margin-bottom: 0 !important;
@@ -1796,7 +1800,50 @@ st.markdown(
         letter-spacing: 0.08em;
         color: var(--text-1);
     }
-
+    div.stElementContainer:has(.dimension-select-anchor) {
+        display: none !important;
+        height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+    div.stElementContainer:has(.dimension-select-anchor) + div[data-testid="stElementContainer"] {
+        width: 128px !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        background: transparent !important;
+        border: 0 !important;
+        box-shadow: none !important;
+        position: absolute !important;
+        top: 10px !important;
+        right: 12px !important;
+        z-index: 5 !important;
+    }
+    div.stElementContainer:has(.dimension-select-anchor) + div[data-testid="stElementContainer"] [data-testid="stSelectbox"] {
+        max-width: 128px !important;
+        margin-left: auto !important;
+        width: 100% !important;
+    }
+    div.stElementContainer:has(.dimension-select-anchor) + div[data-testid="stElementContainer"] [data-baseweb="select"] > div {
+        min-height: 32px !important;
+        height: 32px !important;
+        border-radius: 10px !important;
+        background: var(--surface-strong) !important;
+        border: 1px solid var(--border) !important;
+        box-shadow: none !important;
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+    }
+    div.stElementContainer:has(.dimension-select-anchor) + div[data-testid="stElementContainer"] [data-baseweb="select"] span,
+    div.stElementContainer:has(.dimension-select-anchor) + div[data-testid="stElementContainer"] [data-baseweb="select"] input,
+    div.stElementContainer:has(.dimension-select-anchor) + div[data-testid="stElementContainer"] [data-baseweb="select"] div {
+        font-size: 0.68rem !important;
+        font-weight: 700 !important;
+        color: var(--text-1) !important;
+        -webkit-text-fill-color: var(--text-1) !important;
+    }
+    div.stElementContainer:has(.dimension-select-anchor) + div[data-testid="stElementContainer"] [data-baseweb="select"] svg {
+        fill: var(--text-2) !important;
+    }
     .hist-box {
         margin-top: 10px;
         border: 1px solid var(--border);
@@ -3225,6 +3272,8 @@ def extract_dimension_chart_points(df, dimension_key, limit=12):
 
 @st.cache_data(show_spinner=False)
 def dimension_control_chart(labels, values, theme_mode, dimension_key):
+    labels = list(labels)
+    values = list(values)
     is_dark = is_dark_theme(theme_mode)
     axis_text = "#d7e0e8" if is_dark else "#5a564f"
     grid_color = "rgba(132, 151, 172, 0.22)" if is_dark else "rgba(200,192,179,0.35)"
@@ -3234,6 +3283,7 @@ def dimension_control_chart(labels, values, theme_mode, dimension_key):
     hover_bg = "#212933" if is_dark else "#fffdf8"
     hover_border = "#49586a" if is_dark else "#d9cfbf"
     hover_text = "#eef3f7" if is_dark else "#171512"
+    annotation_bg = "rgba(24, 28, 34, 0.78)" if is_dark else "rgba(255, 253, 248, 0.92)"
 
     spec_key = str(dimension_key).strip().lower()
     lower, upper = DIMENSION_TARGETS.get(spec_key, (0.0, 1.0))
@@ -3246,7 +3296,7 @@ def dimension_control_chart(labels, values, theme_mode, dimension_key):
         y_min = lower
         y_max = upper
 
-    pad = max((y_max - y_min) * 0.28, 0.02)
+    pad = max((y_max - y_min) * 0.12, 0.004)
     y_range = [y_min - pad, y_max + pad]
     marker_colors = [plot_line if lower <= value <= upper else limit_color for value in values]
 
@@ -3292,12 +3342,12 @@ def dimension_control_chart(labels, values, theme_mode, dimension_key):
         )
 
     fig.update_layout(
-        margin=dict(t=10, b=16, l=0, r=0),
+        margin=dict(t=0, b=28, l=0, r=0),
         height=252,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         hoverlabel=dict(bgcolor=hover_bg, bordercolor=hover_border, font=dict(color=hover_text)),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0, font=dict(size=9)),
+        showlegend=False,
         yaxis=dict(
             title=dict(text="mm", font=dict(size=11, color=axis_text)),
             range=y_range,
@@ -3307,12 +3357,33 @@ def dimension_control_chart(labels, values, theme_mode, dimension_key):
             zeroline=False,
         ),
         xaxis=dict(
-            title=dict(text="Part ID", font=dict(size=11, color=axis_text)),
+            title=dict(text="Part ID", font=dict(size=11, color=axis_text), standoff=6),
             tickfont=dict(size=11, color=axis_text),
             showgrid=False,
             zeroline=False,
+            automargin=True,
         ),
     )
+
+    for label_text, y_value, label_color in (
+        ("UCL", upper, limit_color),
+        ("CL", center, cl_color),
+        ("LCL", lower, limit_color),
+    ):
+        fig.add_annotation(
+            x=0.985,
+            xref="paper",
+            y=y_value,
+            yref="y",
+            text=label_text,
+            showarrow=False,
+            xanchor="right",
+            yanchor="middle",
+            font=dict(size=10, color=label_color, family="IBM Plex Mono"),
+            bgcolor=annotation_bg,
+            bordercolor="rgba(0,0,0,0)",
+            borderpad=2,
+        )
     return fig
 
 
@@ -3989,32 +4060,29 @@ if True:
         )
 
     with trend_chart_slot.container():
-        selected_dimension = st.session_state.get("_dash_dimension_chart_key", "top")
-        if selected_dimension not in DIMENSION_CHART_FIELDS:
-            selected_dimension = "top"
+        default_dimension = st.session_state.get("_dash_dimension_chart_key", "top")
+        if default_dimension not in DIMENSION_CHART_FIELDS:
+            default_dimension = "top"
+        st.markdown('<div id="trend-chart-anchor"></div>', unsafe_allow_html=True)
         st.markdown(
-            f"""
-            <div id="trend-chart-anchor"></div>
+            """
             <div class="chart-shell">
-                <div class="chart-head">
-                    <span class="chart-title">Dimension Control Chart</span>
-                    <span class="chart-sub">UCL / CL / LCL for {DIMENSION_CHART_FIELDS[selected_dimension]['label']}</span>
+                <div class="chart-head chart-head-main" style="margin-bottom:0;">
+                    <span class="chart-title chart-title-main">DIMENSION CONTROL CHART</span>
                 </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        dim_button_cols = st.columns(3, gap="small")
-        for button_col, dim_key in zip(dim_button_cols, ("top", "bottom", "length")):
-            with button_col:
-                if st.button(
-                    DIMENSION_CHART_FIELDS[dim_key]["label"],
-                    key=f"dimension_chart_{dim_key}",
-                    use_container_width=True,
-                    type="primary" if selected_dimension == dim_key else "secondary",
-                ):
-                    st.session_state["_dash_dimension_chart_key"] = dim_key
-                    selected_dimension = dim_key
+        st.markdown('<div class="dimension-select-anchor"></div>', unsafe_allow_html=True)
+        selected_dimension = st.selectbox(
+            "Dimension chart selector",
+            options=list(DIMENSION_CHART_FIELDS.keys()),
+            index=list(DIMENSION_CHART_FIELDS.keys()).index(default_dimension),
+            format_func=lambda key: DIMENSION_CHART_FIELDS[key]["label"],
+            key="_dash_dimension_chart_key",
+            label_visibility="collapsed",
+        )
         chart_labels, chart_values = extract_dimension_chart_points(df_parts_search_base, selected_dimension, limit=12)
         st.plotly_chart(
             dimension_control_chart(tuple(chart_labels), tuple(chart_values), theme_mode, selected_dimension),
