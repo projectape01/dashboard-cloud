@@ -25,6 +25,11 @@ PART_RECORDS_FETCH_LIMIT = 60
 HISTORY_ROWS_RENDER_LIMIT = 18
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+DIMENSION_TARGETS = {
+    "top": (19.45, 19.55),
+    "bottom": (24.45, 24.55),
+    "length": (89.95, 90.05),
+}
 
 
 def load_local_config():
@@ -1669,9 +1674,23 @@ st.markdown(
         font-size: 0.74rem;
         font-weight: 700;
     }
+    .record-val.dim-alert {
+        color: var(--red) !important;
+    }
     .record-val.defect {
         color: var(--red);
         font-weight: 700;
+    }
+    .dimension-target-note {
+        margin-top: 4px;
+        font-size: 0.58rem;
+        line-height: 1.4;
+        color: var(--text-2);
+        text-align: left;
+        font-family: var(--mono);
+    }
+    .dimension-target-note div + div {
+        margin-top: 2px;
     }
 
     .q-grid {
@@ -1848,6 +1867,7 @@ st.markdown(
     .hist-table td.result-fail { color: var(--red) !important; font-weight: 800; }
     .result-na,
     .hist-table td.result-na { color: var(--text-2) !important; font-weight: 700; }
+    .hist-table td.dim-alert { color: var(--red) !important; font-weight: 800; }
     .table-pill {
         display: inline-flex;
         align-items: center;
@@ -2555,6 +2575,32 @@ def normalize_result_value(value):
     return text
 
 
+def dimension_in_spec(value, key):
+    spec = DIMENSION_TARGETS.get(str(key).strip().lower())
+    if not spec:
+        return None
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text or text.lower() == "nan" or text == "-":
+        return None
+    if text.lower().endswith(" mm"):
+        text = text[:-3].strip()
+
+    try:
+        numeric_value = float(text)
+    except (TypeError, ValueError):
+        return None
+
+    lower, upper = spec
+    return lower <= numeric_value <= upper
+
+
+def dimension_alert_class(value, key):
+    return "dim-alert" if dimension_in_spec(value, key) is False else ""
+
+
 def preprocess_part_records(df):
     if df.empty:
         return df.copy()
@@ -2727,7 +2773,7 @@ def format_dimension_value(value):
     if not text or text.lower() == "nan":
         return "-"
     try:
-        return f"{float(text):.2f}"
+        return f"{float(text):.3f} mm"
     except ValueError:
         return text
 
@@ -2780,9 +2826,9 @@ def record_to_inspection_fields(row):
     defect_s1_raw = pick_first_value(row, ["defect_s1", "defect _s1"], "-")
     defect_s2_raw = pick_first_value(row, ["defect_s2", "defect _s2"], "-")
     defect_s3_raw = pick_first_value(row, ["defect_s3", "defect _s3"], "-")
-    dim_top_raw = pick_first_value(row, ["dim_top", "top", "dimension_top", "top_mm", "top_value"], "-")
-    dim_bottom_raw = pick_first_value(row, ["dim_bottom", "bottom", "dimension_bottom", "bottom_mm", "bottom_value"], "-")
-    dim_length_raw = pick_first_value(row, ["dim_length", "length", "dimension_length", "length_mm", "length_value"], "-")
+    dim_top_raw = pick_first_value(row, ["dimension of top", "dim_top", "top", "dimension_top", "top_mm", "top_value"], "-")
+    dim_bottom_raw = pick_first_value(row, ["dimension of bottom", "dim_bottom", "bottom", "dimension_bottom", "bottom_mm", "bottom_value"], "-")
+    dim_length_raw = pick_first_value(row, ["dimension of length", "dim_length", "length", "dimension_length", "length_mm", "length_value"], "-")
 
     return {
         "part_id": row.get("part_id", "—"),
@@ -3688,6 +3734,9 @@ if True:
         side2_badge = "badge-good" if side2_tone == "good" else "badge-ng" if side2_tone == "ng" else "badge-neutral"
         side3_badge = "badge-good" if side3_tone == "good" else "badge-ng" if side3_tone == "ng" else "badge-neutral"
         overall_class = "overall-pass" if view_result == "PASS" else "overall-fail" if view_result in {"FAIL", "NG"} else "overall-neutral"
+        dim_top_class = dimension_alert_class(view_dim_top, "top")
+        dim_bottom_class = dimension_alert_class(view_dim_bottom, "bottom")
+        dim_length_class = dimension_alert_class(view_dim_length, "length")
 
         with gallery_slot.container():
             st.markdown(capture_gallery, unsafe_allow_html=True)
@@ -3721,9 +3770,14 @@ if True:
                             </div>
                             <div class="record-col">
                                 <div class="record-col-title">DIMENSION</div>
-                                <div class="record-line"><span>Top</span><span class="record-val">{view_dim_top}</span></div>
-                                <div class="record-line"><span>Bottom</span><span class="record-val">{view_dim_bottom}</span></div>
-                                <div class="record-line"><span>Length</span><span class="record-val">{view_dim_length}</span></div>
+                                <div class="record-line"><span>Top</span><span class="record-val {dim_top_class}">{view_dim_top}</span></div>
+                                <div class="record-line"><span>Bottom</span><span class="record-val {dim_bottom_class}">{view_dim_bottom}</span></div>
+                                <div class="record-line"><span>Length</span><span class="record-val {dim_length_class}">{view_dim_length}</span></div>
+                                <div class="dimension-target-note">
+                                    <div>Target Top: 19.50 +/- 0.05 mm</div>
+                                    <div>Target Bottom: 24.50 +/- 0.05 mm</div>
+                                    <div>Target Length: 90.00 +/- 0.05 mm</div>
+                                </div>
                             </div>
                         </div>
                     </div>
