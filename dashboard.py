@@ -26,9 +26,9 @@ HISTORY_ROWS_RENDER_LIMIT = 18
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 DIMENSION_TARGETS = {
-    "top": (19.45, 19.55),
-    "bottom": (24.45, 24.55),
-    "length": (89.95, 90.05),
+    "top": (19.20, 19.80),
+    "bottom": (24.20, 24.80),
+    "length": (89.70, 90.30),
 }
 DIMENSION_CHART_FIELDS = {
     "top": {
@@ -1741,7 +1741,7 @@ st.markdown(
         border-color: var(--blue-bd);
     }
     .q-num {
-        font-size: 1.55rem;
+        font-size: 1.8rem;
         line-height: 1;
         font-weight: 700;
         font-family: var(--mono);
@@ -2164,7 +2164,7 @@ st.markdown(
             font-size: 1rem;
         }
         .q-num {
-            font-size: 1.25rem;
+            font-size: 1.3rem;
         }
         .card-empty {
             min-height: auto !important;
@@ -3973,9 +3973,9 @@ if True:
                                 <div class="record-line"><span>Bottom</span><span class="record-val {dim_bottom_class}">{view_dim_bottom}</span></div>
                                 <div class="record-line"><span>Length</span><span class="record-val {dim_length_class}">{view_dim_length}</span></div>
                                 <div class="dimension-target-note">
-                                    <div>Target Top: 19.50 +/- 0.05 mm</div>
-                                    <div>Target Bottom: 24.50 +/- 0.05 mm</div>
-                                    <div>Target Length: 90.00 +/- 0.05 mm</div>
+                                    <div>Target Top: 19.50 +/- 0.30 mm</div>
+                                    <div>Target Bottom: 24.50 +/- 0.30 mm</div>
+                                    <div>Target Length: 90.00 +/- 0.30 mm</div>
                                 </div>
                             </div>
                         </div>
