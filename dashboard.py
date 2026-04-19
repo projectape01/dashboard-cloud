@@ -16,12 +16,13 @@ from plotly.subplots import make_subplots
 # --- Configuration ---
 DEFAULT_SUPABASE_URL = "https://ptxfbxwufbrivfrcplku.supabase.co"
 DEFAULT_SUPABASE_KEY = ""
-DATA_REFRESH_SECONDS = 30
-PART_RECORDS_REFRESH_SECONDS = 90
+SYSTEM_REFRESH_SECONDS = 120
+PART_RECORDS_REFRESH_SECONDS = 120
+DASHBOARD_AUTO_REFRESH_SECONDS = 120
 SUPABASE_TIMEOUT_SECONDS = 4
 SYSTEM_STATUS_STALE_SECONDS = 150
 CHART_CONFIG = {"displayModeBar": False, "staticPlot": True, "responsive": True}
-PART_RECORDS_FETCH_LIMIT = 60
+PART_RECORDS_FETCH_LIMIT = None
 HISTORY_ROWS_RENDER_LIMIT = 18
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
@@ -1688,7 +1689,7 @@ st.markdown(
     }
     .record-val {
         font-family: var(--mono);
-        color: var(--text-1);
+        color: #171512;
         font-size: 0.74rem;
         font-weight: 700;
     }
@@ -2576,9 +2577,11 @@ def get_requests_session():
     return session
 
 
-@st.cache_data(ttl=DATA_REFRESH_SECONDS, show_spinner=False)
-def fetch(table, limit=20, order="timestamp"):
-    url = f"{SUPABASE_URL}/rest/v1/{table}?select=*&order={order}.desc&limit={limit}"
+@st.cache_data(show_spinner=False)
+def fetch(table, limit=20, order="timestamp", cache_bucket=0):
+    url = f"{SUPABASE_URL}/rest/v1/{table}?select=*&order={order}.desc"
+    if limit is not None:
+        url += f"&limit={limit}"
     try:
         response = get_requests_session().get(url, timeout=SUPABASE_TIMEOUT_SECONDS)
         if response.status_code == 200:
@@ -2725,15 +2728,6 @@ def format_timestamp(value):
         except ValueError:
             continue
     return raw[:16]
-
-
-def parse_timestamp(value):
-    if value is None:
-        return pd.NaT
-    try:
-        return pd.to_datetime(value, errors="coerce")
-    except Exception:
-        return pd.NaT
 
 
 def format_remaining_minutes(value):
@@ -3358,6 +3352,10 @@ def dimension_control_chart(labels, values, theme_mode, dimension_key):
         ),
         xaxis=dict(
             title=dict(text="Part ID", font=dict(size=11, color=axis_text), standoff=6),
+            type="category",
+            tickmode="array",
+            tickvals=labels,
+            ticktext=labels,
             tickfont=dict(size=11, color=axis_text),
             showgrid=False,
             zeroline=False,
@@ -3426,15 +3424,22 @@ if True:
     now_ts = now.timestamp()
     last_sys_refresh_ts = st.session_state.get("_dash_last_sys_refresh_ts", 0.0)
     last_parts_refresh_ts = st.session_state.get("_dash_last_parts_refresh_ts", 0.0)
-    needs_sys_refresh = (now_ts - last_sys_refresh_ts) >= DATA_REFRESH_SECONDS
+    needs_sys_refresh = (now_ts - last_sys_refresh_ts) >= SYSTEM_REFRESH_SECONDS
     needs_parts_refresh = (now_ts - last_parts_refresh_ts) >= PART_RECORDS_REFRESH_SECONDS
 
     if needs_sys_refresh or "_dash_df_sys" not in st.session_state:
-        st.session_state["_dash_df_sys"] = fetch("system_status", limit=1, order="id")
+        sys_cache_bucket = int(now_ts // SYSTEM_REFRESH_SECONDS)
+        st.session_state["_dash_df_sys"] = fetch("system_status", limit=1, order="id", cache_bucket=sys_cache_bucket)
         st.session_state["_dash_last_sys_refresh_ts"] = now_ts
 
     if needs_parts_refresh or "_dash_df_parts" not in st.session_state:
-        st.session_state["_dash_df_parts"] = fetch("part_records", limit=PART_RECORDS_FETCH_LIMIT, order="record_timestamp")
+        parts_cache_bucket = int(now_ts // PART_RECORDS_REFRESH_SECONDS)
+        st.session_state["_dash_df_parts"] = fetch(
+            "part_records",
+            limit=PART_RECORDS_FETCH_LIMIT,
+            order="record_timestamp",
+            cache_bucket=parts_cache_bucket,
+        )
         st.session_state["_dash_df_parts_search"] = preprocess_part_records(st.session_state["_dash_df_parts"])
         st.session_state["_dash_last_parts_refresh_ts"] = now_ts
 
@@ -3492,7 +3497,12 @@ if True:
 
     printer_status_upper = str(printer_status or "").strip().upper()
     printer_is_active = printer_status_upper in {"RUNNING", "PRINTING", "PREPARE", "PREPARING", "PAUSE", "PAUSED"} or (printer_progress or 0) > 0
-    printer_connected = printer_status_upper not in {"DISCONNECTED", "UNKNOWN", ""} and not printer_status_upper.startswith("CONN ERROR")
+    printer_connected = (
+        system_status_is_fresh
+        and printer_status_upper not in {"DISCONNECTED", "UNKNOWN", "", "STALE", "CONNECTING", "CONFIG MISSING"}
+        and not printer_status_upper.startswith("CONN ERROR")
+        and not printer_status_upper.startswith("ERROR ")
+    )
     temp_num_class = "temp-num active" if printer_is_active else "temp-num"
     cobot_ip = server_ip
     cobot_port = modbus_port
@@ -3593,6 +3603,23 @@ if True:
             """,
             unsafe_allow_html=True,
         )
+
+    components.html(
+        f"""
+        <script>
+          (function() {{
+            const intervalMs = {int(DASHBOARD_AUTO_REFRESH_SECONDS * 1000)};
+            const key = "__projectA1DashAutoRefresh";
+            if (window.parent && !window.parent[key]) {{
+              window.parent[key] = window.setInterval(function() {{
+                window.parent.location.reload();
+              }}, intervalMs);
+            }}
+          }})();
+        </script>
+        """,
+        height=0,
+    )
 
     with clock_script_slot.container():
         components.html(
